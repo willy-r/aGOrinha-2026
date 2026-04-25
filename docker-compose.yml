@@ -13,10 +13,10 @@ services:
           memory: "165MB"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://localhost:9999/ready"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
 
   app2:
     image: willrodrigues/gorinha-2026:latest
@@ -32,10 +32,10 @@ services:
           memory: "165MB"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://localhost:9999/ready"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
 
   nginx:
     image: nginx:1.27-alpine
