@@ -43,6 +43,11 @@ func (r *Router) handleReady(ctx *fasthttp.RequestCtx) {
 }
 
 func (r *Router) handleFraudScore(ctx *fasthttp.RequestCtx) {
+	if !r.ready.Load() {
+		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
+		return
+	}
+
 	var req index.FraudRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)

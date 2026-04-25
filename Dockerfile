@@ -10,7 +10,7 @@ COPY . .
 RUN CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=amd64 \
-    GOAMD64=v3 \
+    GOAMD64=v2 \
     go build \
     -ldflags="-s -w" \
     -o gorinha-be \
