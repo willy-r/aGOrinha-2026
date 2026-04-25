@@ -6,7 +6,33 @@ import (
 
 func BenchmarkKNNSearch(b *testing.B) {
 	idx := &Index{}
-	if err := Load(idx, "../../resources"); err != nil {
+	if err := Load(idx, "../../resources", 1); err != nil {
+		b.Fatalf("load: %v", err)
+	}
+	query := [14]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 0.5, 0.5}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		KNNSearch(idx, &query)
+	}
+}
+
+func BenchmarkKNNSearchParallel2(b *testing.B) {
+	idx := &Index{}
+	if err := Load(idx, "../../resources", 2); err != nil {
+		b.Fatalf("load: %v", err)
+	}
+	query := [14]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 0.5, 0.5}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		KNNSearch(idx, &query)
+	}
+}
+
+func BenchmarkKNNSearchParallel4(b *testing.B) {
+	idx := &Index{}
+	if err := Load(idx, "../../resources", 4); err != nil {
 		b.Fatalf("load: %v", err)
 	}
 	query := [14]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 0.5, 0.5}
@@ -77,7 +103,7 @@ func TestVectorizeClamping(t *testing.T) {
 
 func TestKNNSearchZeroAlloc(t *testing.T) {
 	idx := &Index{}
-	if err := Load(idx, "../../resources"); err != nil {
+	if err := Load(idx, "../../resources", 1); err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	query := [14]float32{0.1, 0.1, 0.1, 0.1, 0.1, -1, -1, 0.1, 0.1, 0, 1, 0, 0.15, 0.1}
