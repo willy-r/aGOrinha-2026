@@ -3,6 +3,7 @@ package index
 import (
 	"fmt"
 	"math"
+	"sync"
 	"time"
 )
 
@@ -90,16 +91,25 @@ func Vectorize(req *FraudRequest, mccRisk map[string]float32) ([14]float32, erro
 	return v, nil
 }
 
+const K = 5
+
 type neighbor struct {
 	distSq  float32
 	isFraud bool
 }
 
-// KNNSearch returns the count of fraud-labeled entries among the 5 nearest
-// neighbors of query. Zero heap allocations — all temporaries are stack-allocated.
+// KNNSearch returns the fraud count among the 5 nearest neighbors.
+// Uses parallel shard search when idx.Shards is populated, sequential otherwise.
 func KNNSearch(idx *Index, query *[14]float32) int {
-	const K = 5
+	if len(idx.Shards) > 1 {
+		return knnParallel(idx.Shards, query)
+	}
+	return countFraud(searchShard(idx.Refs, query))
+}
 
+// searchShard scans refs and returns the local top-K neighbors.
+// All temporaries are stack-allocated — zero heap allocations.
+func searchShard(refs []RefEntry, query *[14]float32) [K]neighbor {
 	var top [K]neighbor
 	for i := range top {
 		top[i].distSq = math.MaxFloat32
@@ -107,10 +117,10 @@ func KNNSearch(idx *Index, query *[14]float32) int {
 	maxDist := float32(math.MaxFloat32)
 	maxIdx := 0
 
-	for i := range idx.Refs {
-		d := squaredDist(&idx.Refs[i].V, query)
+	for i := range refs {
+		d := squaredDist(&refs[i].V, query)
 		if d < maxDist {
-			top[maxIdx] = neighbor{d, idx.Refs[i].IsFraud}
+			top[maxIdx] = neighbor{d, refs[i].IsFraud}
 			maxDist = top[0].distSq
 			maxIdx = 0
 			for j := 1; j < K; j++ {
@@ -121,7 +131,50 @@ func KNNSearch(idx *Index, query *[14]float32) int {
 			}
 		}
 	}
+	return top
+}
 
+// knnParallel scans each shard in its own goroutine and merges the results.
+func knnParallel(shards [][]RefEntry, query *[14]float32) int {
+	tops := make([][K]neighbor, len(shards))
+
+	var wg sync.WaitGroup
+	wg.Add(len(shards))
+	for i, shard := range shards {
+		go func(i int, shard []RefEntry) {
+			tops[i] = searchShard(shard, query)
+			wg.Done()
+		}(i, shard)
+	}
+	wg.Wait()
+
+	// merge shard results into a single global top-K
+	var merged [K]neighbor
+	for i := range merged {
+		merged[i].distSq = math.MaxFloat32
+	}
+	maxDist := float32(math.MaxFloat32)
+	maxIdx := 0
+
+	for _, top := range tops {
+		for _, n := range top {
+			if n.distSq < maxDist {
+				merged[maxIdx] = n
+				maxDist = merged[0].distSq
+				maxIdx = 0
+				for j := 1; j < K; j++ {
+					if merged[j].distSq > maxDist {
+						maxDist = merged[j].distSq
+						maxIdx = j
+					}
+				}
+			}
+		}
+	}
+	return countFraud(merged)
+}
+
+func countFraud(top [K]neighbor) int {
 	count := 0
 	for i := range top {
 		if top[i].isFraud {

@@ -9,12 +9,25 @@ import (
 )
 
 // Load reads all resource files and populates idx.
-func Load(idx *Index, resourceDir string) error {
+// numShards > 1 enables parallel KNN by pre-slicing Refs into sub-views.
+func Load(idx *Index, resourceDir string, numShards int) error {
 	if err := loadMCCRisk(idx, filepath.Join(resourceDir, "mcc_risk.json")); err != nil {
 		return fmt.Errorf("loading mcc_risk: %w", err)
 	}
 	if err := loadReferences(idx, filepath.Join(resourceDir, "references.json.gz")); err != nil {
 		return fmt.Errorf("loading references: %w", err)
+	}
+	if numShards > 1 {
+		shardSize := (len(idx.Refs) + numShards - 1) / numShards
+		idx.Shards = make([][]RefEntry, numShards)
+		for i := range idx.Shards {
+			start := i * shardSize
+			end := start + shardSize
+			if end > len(idx.Refs) {
+				end = len(idx.Refs)
+			}
+			idx.Shards[i] = idx.Refs[start:end]
+		}
 	}
 	PrecomputeResponses(idx)
 	return nil

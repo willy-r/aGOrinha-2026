@@ -12,8 +12,9 @@ type RefEntry struct {
 // Index holds all in-memory data loaded at startup.
 type Index struct {
 	Refs      []RefEntry
+	Shards    [][]RefEntry      // sub-slices of Refs for parallel KNN; nil = sequential
 	MCCRisk   map[string]float32
-	Responses [6][]byte // pre-computed JSON responses indexed by fraud count (0–5)
+	Responses [6][]byte         // pre-computed JSON responses indexed by fraud count (0–5)
 }
 
 // FraudRequest mirrors the POST /fraud-score request body.

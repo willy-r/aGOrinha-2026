@@ -5,6 +5,7 @@ import (
 	"gorinha-2026/internal/config"
 	"gorinha-2026/internal/index"
 	"log"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/valyala/fasthttp"
@@ -13,12 +14,13 @@ import (
 func main() {
 	resourceDir := config.GetEnv("RESOURCES_DIR", "resources")
 	listenAddr := config.GetEnv("LISTEN_ADDR", "0.0.0.0:9999")
+	numShards, _ := strconv.Atoi(config.GetEnv("KNN_WORKERS", "2"))
 
 	idx := &index.Index{}
 	ready := &atomic.Bool{}
 
 	log.Println("Loading index...")
-	if err := index.Load(idx, resourceDir); err != nil {
+	if err := index.Load(idx, resourceDir, numShards); err != nil {
 		log.Fatalf("failed to load index: %v", err)
 	}
 	log.Printf("Index loaded: %d reference entries", len(idx.Refs))
