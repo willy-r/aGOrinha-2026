@@ -12,27 +12,10 @@ import (
 
 func main() {
 	resourceDir := config.GetEnv("RESOURCES_DIR", "resources")
-	listenAddr := config.GetEnv("LISTEN_ADDR", ":9999")
+	listenAddr := config.GetEnv("LISTEN_ADDR", "0.0.0.0:9999")
 
 	idx := &index.Index{}
 	ready := &atomic.Bool{}
-
-	router := api.NewRouter(idx, ready)
-	server := &fasthttp.Server{
-		Handler:           safeHandler(router.HandleRequest),
-		ReduceMemoryUsage: false,
-	}
-
-	// Start HTTP server immediately so /ready is always reachable.
-	// During index loading it returns 503; after loading it returns 200.
-	serverDone := make(chan struct{})
-	go func() {
-		log.Printf("Listening on %s", listenAddr)
-		if err := server.ListenAndServe(listenAddr); err != nil {
-			log.Printf("server stopped: %v", err)
-		}
-		close(serverDone)
-	}()
 
 	log.Println("Loading index...")
 	if err := index.Load(idx, resourceDir); err != nil {
@@ -41,7 +24,15 @@ func main() {
 	log.Printf("Index loaded: %d reference entries", len(idx.Refs))
 	ready.Store(true)
 
-	<-serverDone
+	router := api.NewRouter(idx, ready)
+
+	server := &fasthttp.Server{
+		Handler:           safeHandler(router.HandleRequest),
+		ReduceMemoryUsage: false,
+	}
+
+	log.Printf("Listening on %s", listenAddr)
+	log.Fatal(server.ListenAndServe(listenAddr))
 }
 
 func safeHandler(h fasthttp.RequestHandler) fasthttp.RequestHandler {
