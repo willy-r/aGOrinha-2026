@@ -1,10 +1,11 @@
 package api
 
 import (
-	"encoding/json"
+	"bytes"
 	"gorinha-2026/internal/index"
 	"sync/atomic"
 
+	json "github.com/goccy/go-json"
 	"github.com/valyala/fasthttp"
 )
 
@@ -18,15 +19,16 @@ func NewRouter(idx *index.Index, ready *atomic.Bool) *Router {
 }
 
 func (r *Router) HandleRequest(ctx *fasthttp.RequestCtx) {
-	switch string(ctx.Path()) {
-	case "/ready":
-		r.handleReady(ctx)
-	case "/fraud-score":
+	path := ctx.Path()
+	switch {
+	case bytes.Equal(path, []byte("/fraud-score")):
 		if ctx.IsPost() {
 			r.handleFraudScore(ctx)
 			return
 		}
 		ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+	case bytes.Equal(path, []byte("/ready")):
+		r.handleReady(ctx)
 	default:
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 	}

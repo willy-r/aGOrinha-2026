@@ -29,8 +29,10 @@ func main() {
 	router := api.NewRouter(idx, ready)
 
 	server := &fasthttp.Server{
-		Handler:           safeHandler(router.HandleRequest),
-		ReduceMemoryUsage: false,
+		Handler:               safeHandler(router.HandleRequest),
+		ReduceMemoryUsage:     false,
+		NoDefaultServerHeader: true,
+		NoDefaultContentType:  true,
 	}
 
 	log.Printf("Listening on %s", listenAddr)
