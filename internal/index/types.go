@@ -1,36 +1,40 @@
 package index
 
-// RefEntry is one labeled reference vector.
-// Fixed [14]float32 lets the compiler unroll and SIMD-vectorize the distance loop.
-// Padded to 60 bytes so each entry fits in one cache line.
-type RefEntry struct {
-	V       [14]float32
-	IsFraud bool
-	_       [3]byte
-}
+const (
+	Dims        = 14
+	K           = 5
+	NumClusters = 256
+	NProbe      = 32
+	// VecScale maps float32 vectors to int16: [-1,1] → [-1000,1000].
+	// Max squared distance: 14 × (2000)² = 56,000,000 — fits safely in int32.
+	VecScale = 1000.0
+)
 
-// Index holds all in-memory data loaded at startup.
+// Index holds the in-memory IVF index built from a binary file.
 type Index struct {
-	Refs      []RefEntry
-	Shards    [][]RefEntry      // sub-slices of Refs for parallel KNN; nil = sequential
+	NumVecs   int
+	Centroids [NumClusters][Dims]float32 // cluster centroids
+	Offsets   [NumClusters + 1]int       // Offsets[c]..Offsets[c+1] = vector range for cluster c
+	Vecs      [][Dims]int16              // all vectors sorted by cluster (int16, scale=VecScale)
+	Labels    []bool                     // fraud label per vector, same order as Vecs
 	MCCRisk   map[string]float32
-	Responses [6][]byte         // pre-computed JSON responses indexed by fraud count (0–5)
+	Responses [K + 1][]byte // pre-computed JSON responses indexed by fraud count (0–5)
 }
 
 // FraudRequest mirrors the POST /fraud-score request body.
 type FraudRequest struct {
-	ID          string          `json:"id"`
-	Transaction TxInput         `json:"transaction"`
-	Customer    CustomerInput   `json:"customer"`
-	Merchant    MerchantInput   `json:"merchant"`
-	Terminal    TerminalInput   `json:"terminal"`
-	LastTx      *LastTxInput    `json:"last_transaction"`
+	ID          string        `json:"id"`
+	Transaction TxInput       `json:"transaction"`
+	Customer    CustomerInput `json:"customer"`
+	Merchant    MerchantInput `json:"merchant"`
+	Terminal    TerminalInput `json:"terminal"`
+	LastTx      *LastTxInput  `json:"last_transaction"`
 }
 
 type TxInput struct {
-	Amount      float64 `json:"amount"`
-	Installments int    `json:"installments"`
-	RequestedAt string  `json:"requested_at"`
+	Amount       float64 `json:"amount"`
+	Installments int     `json:"installments"`
+	RequestedAt  string  `json:"requested_at"`
 }
 
 type CustomerInput struct {

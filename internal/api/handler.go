@@ -61,7 +61,7 @@ func (r *Router) handleFraudScore(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	fraudCount := index.KNNSearch(r.idx, &query)
+	fraudCount := index.IVFSearch(r.idx, &query)
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json")

@@ -4,42 +4,34 @@ import (
 	"testing"
 )
 
-func BenchmarkKNNSearch(b *testing.B) {
+// loadOrSkip loads the binary IVF index and skips the test if index.bin is absent.
+func loadOrSkip(tb testing.TB) *Index {
+	tb.Helper()
 	idx := &Index{}
-	if err := Load(idx, "../../resources", 1); err != nil {
-		b.Fatalf("load: %v", err)
+	if err := Load(idx, "../../resources"); err != nil {
+		tb.Skipf("skipping (no index.bin): %v", err)
 	}
-	query := [14]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 0.5, 0.5}
+	return idx
+}
+
+func BenchmarkIVFSearch(b *testing.B) {
+	idx := loadOrSkip(b)
+	query := [Dims]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 0.5, 0.5}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		KNNSearch(idx, &query)
+		IVFSearch(idx, &query)
 	}
 }
 
-func BenchmarkKNNSearchParallel2(b *testing.B) {
-	idx := &Index{}
-	if err := Load(idx, "../../resources", 2); err != nil {
-		b.Fatalf("load: %v", err)
-	}
-	query := [14]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 0.5, 0.5}
+func BenchmarkIVFSearchNullLastTx(b *testing.B) {
+	idx := loadOrSkip(b)
+	// dims 5 and 6 are the -1 sentinel for null last_transaction
+	query := [Dims]float32{0.1, 0.1, 0.1, 0.5, 0.3, -1, -1, 0.05, 0.1, 1, 0, 1, 0.5, 0.1}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		KNNSearch(idx, &query)
-	}
-}
-
-func BenchmarkKNNSearchParallel4(b *testing.B) {
-	idx := &Index{}
-	if err := Load(idx, "../../resources", 4); err != nil {
-		b.Fatalf("load: %v", err)
-	}
-	query := [14]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 0.5, 0.5}
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		KNNSearch(idx, &query)
+		IVFSearch(idx, &query)
 	}
 }
 
@@ -56,6 +48,17 @@ func BenchmarkVectorize(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		Vectorize(req, mccRisk)
+	}
+}
+
+func TestIVFSearchZeroAlloc(t *testing.T) {
+	idx := loadOrSkip(t)
+	query := [Dims]float32{0.1, 0.1, 0.1, 0.1, 0.1, -1, -1, 0.1, 0.1, 0, 1, 0, 0.15, 0.1}
+	result := testing.AllocsPerRun(100, func() {
+		IVFSearch(idx, &query)
+	})
+	if result != 0 {
+		t.Errorf("IVFSearch allocates %v, want 0", result)
 	}
 }
 
@@ -80,7 +83,6 @@ func TestVectorizeNullLastTx(t *testing.T) {
 }
 
 func TestVectorizeClamping(t *testing.T) {
-	// requested_at is far future vs last_tx to exceed 1440 minutes
 	req := &FraudRequest{
 		Transaction: TxInput{Amount: 99999, Installments: 100, RequestedAt: "2026-04-26T12:00:00Z"},
 		Customer:    CustomerInput{AvgAmount: 1, TxCount24h: 999, KnownMerchants: []string{}},
@@ -92,25 +94,10 @@ func TestVectorizeClamping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// dims 0,1,2,5,6,7,8,13 should all be clamped to 1.0
 	clamped := []int{0, 1, 2, 5, 6, 7, 8, 13}
 	for _, i := range clamped {
 		if v[i] != 1.0 {
 			t.Errorf("dim[%d] = %v, want 1.0 after clamp", i, v[i])
 		}
-	}
-}
-
-func TestKNNSearchZeroAlloc(t *testing.T) {
-	idx := &Index{}
-	if err := Load(idx, "../../resources", 1); err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	query := [14]float32{0.1, 0.1, 0.1, 0.1, 0.1, -1, -1, 0.1, 0.1, 0, 1, 0, 0.15, 0.1}
-	result := testing.AllocsPerRun(100, func() {
-		KNNSearch(idx, &query)
-	})
-	if result != 0 {
-		t.Errorf("KNNSearch allocates %v, want 0", result)
 	}
 }
