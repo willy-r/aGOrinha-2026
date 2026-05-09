@@ -1,10 +1,26 @@
 package index
 
+/*
+#cgo CFLAGS: -O3 -march=haswell -mavx2
+#include <stdint.h>
+
+int ivf_cluster_scan(
+    const int16_t *vecs,
+    const uint8_t *labels,
+    const int32_t *offsets,
+    const int32_t *probes,
+    int            nprobe,
+    const int16_t *query,
+    int            k
+);
+*/
+import "C"
 import (
 	"fmt"
 	"math"
-	"sync"
+	"slices"
 	"time"
+	"unsafe"
 )
 
 func clamp(v float32) float32 {
@@ -17,21 +33,83 @@ func clamp(v float32) float32 {
 	return v
 }
 
-// squaredDist computes squared Euclidean distance between two 14D vectors.
-// No sqrt needed — ordering is preserved for KNN comparisons.
-// Fixed-size pointer args allow the compiler to unroll and vectorize the loop.
-func squaredDist(a, b *[14]float32) float32 {
-	var sum float32
-	for i := 0; i < 14; i++ {
-		d := a[i] - b[i]
-		sum += d * d
+type centroidDist struct {
+	dist float32
+	id   int
+}
+
+// IVFSearch finds the K nearest neighbors via IVF and returns the fraud count.
+//
+// Hot path breakdown (all stack-allocated, zero heap allocations):
+//  1. Quantize query float32 → int16  [16]int16 on stack
+//  2. Compute float32 dist to all centroids  [NumClusters]centroidDist on stack (~16 KB)
+//  3. Partial-select the NProbe nearest centroids  [NProbe]int32 on stack
+//  4. One CGo call into the AVX2 C function that scans the probed clusters
+func IVFSearch(idx *Index, query *[Dims]float32) int {
+	// 1. Quantize query to int16, padded to 16 elements for the AVX2 load.
+	var qInt16 [16]int16 // elements 14-15 stay 0
+	for i, f := range query {
+		qInt16[i] = int16(math.Round(float64(f) * VecScale))
 	}
-	return sum
+
+	// 2. Compute distance from query to every centroid (float32, trivial CPU cost).
+	var cDists [NumClusters]centroidDist
+	for c := range NumClusters {
+		var d float32
+		for i := range Dims {
+			diff := query[i] - idx.Centroids[c][i]
+			d += diff * diff
+		}
+		cDists[c] = centroidDist{d, c}
+	}
+
+	// 3. Partial selection — move the NProbe nearest centroids to the front.
+	partialMinSelect(&cDists, NProbe)
+
+	var probes [NProbe]int32
+	for p := range NProbe {
+		probes[p] = int32(cDists[p].id)
+	}
+
+	// 4. AVX2 cluster scan in C — one CGo call for the whole search.
+	return int(C.ivf_cluster_scan(
+		(*C.int16_t)(unsafe.Pointer(&idx.Vecs[0])),
+		(*C.uint8_t)(unsafe.Pointer(&idx.Labels[0])),
+		(*C.int32_t)(unsafe.Pointer(&idx.Offsets[0])),
+		(*C.int32_t)(unsafe.Pointer(&probes[0])),
+		C.int(NProbe),
+		(*C.int16_t)(unsafe.Pointer(&qInt16[0])),
+		C.int(K),
+	))
+}
+
+// partialMinSelect rearranges arr so the first n elements are the n smallest.
+// O(NumClusters × n) — for NumClusters=1024 and n=48 this is ~49 K comparisons.
+func partialMinSelect(arr *[NumClusters]centroidDist, n int) {
+	for i := range n {
+		minIdx := i
+		for j := i + 1; j < NumClusters; j++ {
+			if arr[j].dist < arr[minIdx].dist {
+				minIdx = j
+			}
+		}
+		arr[i], arr[minIdx] = arr[minIdx], arr[i]
+	}
+}
+
+// PrecomputeResponses builds K+1 pre-computed JSON responses indexed by fraud count.
+// Threshold: fraud if ≥2/K neighbors are fraud (≈0.286 ≈ Bayes-optimal given FN costs 3× FP).
+func PrecomputeResponses(idx *Index) {
+	for i := range K + 1 {
+		score := float64(i) / float64(K)
+		approved := i < 2
+		idx.Responses[i] = fmt.Appendf(nil, `{"approved":%t,"fraud_score":%.4f}`, approved, score)
+	}
 }
 
 // Vectorize converts a FraudRequest into a 14D float32 query vector.
-func Vectorize(req *FraudRequest, mccRisk map[string]float32) ([14]float32, error) {
-	var v [14]float32
+func Vectorize(req *FraudRequest, mccRisk map[string]float32) ([Dims]float32, error) {
+	var v [Dims]float32
 
 	reqAt, err := parseTime(req.Transaction.RequestedAt)
 	if err != nil {
@@ -52,10 +130,14 @@ func Vectorize(req *FraudRequest, mccRisk map[string]float32) ([14]float32, erro
 	v[4] = float32((int(reqAt.Weekday())+6)%7) / 6.0
 
 	if req.LastTx != nil {
-		lastAt, _ := parseTime(req.LastTx.Timestamp)
-		minutesSince := reqAt.Sub(lastAt).Minutes()
-		v[5] = clamp(float32(minutesSince) / 1440)
-		v[6] = clamp(float32(req.LastTx.KmFromCurrent) / 1000)
+		if lastAt, err := parseTime(req.LastTx.Timestamp); err == nil {
+			minutesSince := reqAt.Sub(lastAt).Minutes()
+			v[5] = clamp(float32(minutesSince) / 1440)
+			v[6] = clamp(float32(req.LastTx.KmFromCurrent) / 1000)
+		} else {
+			v[5] = -1
+			v[6] = -1
+		}
 	} else {
 		v[5] = -1
 		v[6] = -1
@@ -71,14 +153,11 @@ func Vectorize(req *FraudRequest, mccRisk map[string]float32) ([14]float32, erro
 		v[10] = 1
 	}
 
-	isUnknown := float32(1)
-	for _, m := range req.Customer.KnownMerchants {
-		if m == req.Merchant.ID {
-			isUnknown = 0
-			break
-		}
+	if slices.Contains(req.Customer.KnownMerchants, req.Merchant.ID) {
+		v[11] = 0
+	} else {
+		v[11] = 1
 	}
-	v[11] = isUnknown
 
 	mccVal, ok := mccRisk[req.Merchant.MCC]
 	if !ok {
@@ -89,107 +168,6 @@ func Vectorize(req *FraudRequest, mccRisk map[string]float32) ([14]float32, erro
 	v[13] = clamp(float32(req.Merchant.AvgAmount) / 10000)
 
 	return v, nil
-}
-
-const K = 5
-
-type neighbor struct {
-	distSq  float32
-	isFraud bool
-}
-
-// KNNSearch returns the fraud count among the 5 nearest neighbors.
-// Uses parallel shard search when idx.Shards is populated, sequential otherwise.
-func KNNSearch(idx *Index, query *[14]float32) int {
-	if len(idx.Shards) > 1 {
-		return knnParallel(idx.Shards, query)
-	}
-	return countFraud(searchShard(idx.Refs, query))
-}
-
-// searchShard scans refs and returns the local top-K neighbors.
-// All temporaries are stack-allocated — zero heap allocations.
-func searchShard(refs []RefEntry, query *[14]float32) [K]neighbor {
-	var top [K]neighbor
-	for i := range top {
-		top[i].distSq = math.MaxFloat32
-	}
-	maxDist := float32(math.MaxFloat32)
-	maxIdx := 0
-
-	for i := range refs {
-		d := squaredDist(&refs[i].V, query)
-		if d < maxDist {
-			top[maxIdx] = neighbor{d, refs[i].IsFraud}
-			maxDist = top[0].distSq
-			maxIdx = 0
-			for j := 1; j < K; j++ {
-				if top[j].distSq > maxDist {
-					maxDist = top[j].distSq
-					maxIdx = j
-				}
-			}
-		}
-	}
-	return top
-}
-
-// knnParallel scans each shard in its own goroutine and merges the results.
-func knnParallel(shards [][]RefEntry, query *[14]float32) int {
-	tops := make([][K]neighbor, len(shards))
-
-	var wg sync.WaitGroup
-	wg.Add(len(shards))
-	for i, shard := range shards {
-		go func(i int, shard []RefEntry) {
-			tops[i] = searchShard(shard, query)
-			wg.Done()
-		}(i, shard)
-	}
-	wg.Wait()
-
-	// merge shard results into a single global top-K
-	var merged [K]neighbor
-	for i := range merged {
-		merged[i].distSq = math.MaxFloat32
-	}
-	maxDist := float32(math.MaxFloat32)
-	maxIdx := 0
-
-	for _, top := range tops {
-		for _, n := range top {
-			if n.distSq < maxDist {
-				merged[maxIdx] = n
-				maxDist = merged[0].distSq
-				maxIdx = 0
-				for j := 1; j < K; j++ {
-					if merged[j].distSq > maxDist {
-						maxDist = merged[j].distSq
-						maxIdx = j
-					}
-				}
-			}
-		}
-	}
-	return countFraud(merged)
-}
-
-func countFraud(top [K]neighbor) int {
-	count := 0
-	for i := range top {
-		if top[i].isFraud {
-			count++
-		}
-	}
-	return count
-}
-
-// PrecomputeResponses builds the 6 JSON response byte slices indexed by fraud count (0–5).
-func PrecomputeResponses(idx *Index) {
-	scores := [6]float64{0.0, 0.2, 0.4, 0.6, 0.8, 1.0}
-	for i, s := range scores {
-		idx.Responses[i] = []byte(fmt.Sprintf(`{"approved":%t,"fraud_score":%.1f}`, s < 0.6, s))
-	}
 }
 
 func parseTime(s string) (time.Time, error) {

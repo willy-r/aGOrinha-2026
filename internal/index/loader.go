@@ -1,33 +1,22 @@
 package index
 
 import (
-	"compress/gzip"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"unsafe"
 )
 
-// Load reads all resource files and populates idx.
-// numShards > 1 enables parallel KNN by pre-slicing Refs into sub-views.
-func Load(idx *Index, resourceDir string, numShards int) error {
+// Load reads the binary IVF index and the MCC risk table from resourceDir.
+func Load(idx *Index, resourceDir string) error {
 	if err := loadMCCRisk(idx, filepath.Join(resourceDir, "mcc_risk.json")); err != nil {
 		return fmt.Errorf("loading mcc_risk: %w", err)
 	}
-	if err := loadReferences(idx, filepath.Join(resourceDir, "references.json.gz")); err != nil {
-		return fmt.Errorf("loading references: %w", err)
-	}
-	if numShards > 1 {
-		shardSize := (len(idx.Refs) + numShards - 1) / numShards
-		idx.Shards = make([][]RefEntry, numShards)
-		for i := range idx.Shards {
-			start := i * shardSize
-			end := start + shardSize
-			if end > len(idx.Refs) {
-				end = len(idx.Refs)
-			}
-			idx.Shards[i] = idx.Refs[start:end]
-		}
+	if err := loadBinaryIndex(idx, filepath.Join(resourceDir, "index.bin")); err != nil {
+		return fmt.Errorf("loading index.bin: %w", err)
 	}
 	PrecomputeResponses(idx)
 	return nil
@@ -41,42 +30,58 @@ func loadMCCRisk(idx *Index, path string) error {
 	return json.Unmarshal(data, &idx.MCCRisk)
 }
 
-func loadReferences(idx *Index, path string) error {
+func loadBinaryIndex(idx *Index, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	gr, err := gzip.NewReader(f)
-	if err != nil {
-		return err
+	// Header
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return fmt.Errorf("reading magic: %w", err)
 	}
-	defer gr.Close()
-
-	idx.Refs = make([]RefEntry, 0, 100_000)
-
-	dec := json.NewDecoder(gr)
-
-	// consume opening '['
-	if _, err := dec.Token(); err != nil {
-		return fmt.Errorf("expected '[': %w", err)
+	if string(magic[:]) != binMagic {
+		return fmt.Errorf("invalid magic %q, want %q", magic, binMagic)
 	}
 
-	type jsonEntry struct {
-		Vector [14]float32 `json:"vector"`
-		Label  string      `json:"label"`
-	}
-
-	var entry jsonEntry
-	for dec.More() {
-		if err := dec.Decode(&entry); err != nil {
+	var numVecs, numClusters, dims, nProbe uint32
+	for _, p := range []*uint32{&numVecs, &numClusters, &dims, &nProbe} {
+		if err := binary.Read(f, binary.LittleEndian, p); err != nil {
 			return err
 		}
-		idx.Refs = append(idx.Refs, RefEntry{
-			V:       entry.Vector,
-			IsFraud: entry.Label == "fraud",
-		})
+	}
+	if int(numClusters) != NumClusters || int(dims) != Dims {
+		return fmt.Errorf("index mismatch: clusters=%d dims=%d, want %d/%d", numClusters, dims, NumClusters, Dims)
+	}
+	idx.NumVecs = int(numVecs)
+
+	// Centroids: NumClusters × Dims float32
+	if err := binary.Read(f, binary.LittleEndian, &idx.Centroids); err != nil {
+		return fmt.Errorf("reading centroids: %w", err)
+	}
+
+	// Offsets: (NumClusters+1) uint32
+	var rawOffsets [NumClusters + 1]uint32
+	if err := binary.Read(f, binary.LittleEndian, &rawOffsets); err != nil {
+		return fmt.Errorf("reading offsets: %w", err)
+	}
+	for i, o := range rawOffsets {
+		idx.Offsets[i] = int32(o)
+	}
+
+	// Vectors: numVecs × 16 int16 (32 bytes each, padded for AVX2)
+	idx.Vecs = make([][16]int16, numVecs)
+	vecsBytes := unsafe.Slice((*byte)(unsafe.Pointer(&idx.Vecs[0])), int(numVecs)*16*2)
+	if _, err := io.ReadFull(f, vecsBytes); err != nil {
+		return fmt.Errorf("reading vectors: %w", err)
+	}
+
+	// Labels: numVecs uint8 (0=legit, 1=fraud)
+	idx.Labels = make([]uint8, numVecs)
+	if _, err := io.ReadFull(f, idx.Labels); err != nil {
+		return fmt.Errorf("reading labels: %w", err)
 	}
 
 	return nil

@@ -6,7 +6,6 @@ services:
     environment:
       - GOGC=400
       - GOMEMLIMIT=150MiB
-      - KNN_WORKERS=2
     deploy:
       resources:
         limits:
@@ -26,7 +25,6 @@ services:
     environment:
       - GOGC=400
       - GOMEMLIMIT=150MiB
-      - KNN_WORKERS=2
     deploy:
       resources:
         limits:
