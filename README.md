@@ -6,25 +6,27 @@ Implementação do desafio da **Rinha de Backend 2026** utilizando **Go (v1.24)*
 
 ## 🔥 Descrição
 
-Esta solução implementa uma API HTTP para detecção de fraudes em transações de cartão de crédito utilizando busca pelos **k vizinhos mais próximos (KNN)** em um dataset de referência com **100.000 vetores**.
+Esta solução implementa uma API HTTP para detecção de fraudes em transações de cartão de crédito utilizando **IVF (Inverted File Index)** com **SIMD AVX2** sobre **3 milhões de vetores de referência**.
 
 - `GET /ready`: health check — retorna 2xx quando o serviço está pronto para receber requisições.
 - `POST /fraud-score`: recebe os dados de uma transação, calcula um score de fraude e retorna a decisão de aprovação.
 
-O sistema transforma o payload em um **vetor de 14 dimensões**, busca os 5 vizinhos mais próximos no dataset de referência usando **distância Euclidiana**, e decide: `approved = fraud_score < 0.6`.
+O sistema transforma o payload em um **vetor de 14 dimensões**, busca os 7 vizinhos mais próximos via IVF e decide com base na proporção de fraudes entre eles.
 
 ## 📁 Estrutura
 
 ```bash
 gorinha-2026/
 ├── cmd/
-│   └── server/             # Entrypoint do servidor HTTP
+│   ├── server/             # Entrypoint do servidor HTTP
+│   └── build-index/        # Ferramenta CLI que constrói o índice IVF binário
 ├── internal/
 │   ├── api/                # Handlers da API (fasthttp)
 │   ├── config/             # Leitura de variáveis de ambiente
-│   └── index/              # Índice em memória, vetorização e busca KNN
+│   └── index/              # IVF, vetorização, busca AVX2, k-means
+│       └── ivf_avx2.c      # Inner loop em C com _mm256_madd_epi16
 ├── resources/
-│   ├── references.json.gz  # 100k vetores de referência rotulados
+│   ├── references.json.gz  # 3M vetores de referência rotulados (input do build)
 │   ├── mcc_risk.json       # Score de risco por código MCC
 │   └── normalization.json  # Constantes de normalização
 ├── Dockerfile
@@ -36,13 +38,33 @@ gorinha-2026/
 
 ## ⚙️ Tecnologias Utilizadas
 
-* Linguagem: **Go 1.24**
+* Linguagem: **Go 1.24** + **C (CGo)** para o inner loop AVX2
 * Web server: **fasthttp**
-* Persistência: **Em memória** (índice carregado na inicialização)
+* Persistência: **Em memória** — índice binário (~99 MB) carregado na inicialização
 * Load balancer: **NGINX**
 * Orquestração: **Docker Compose**
 
 ## 🧠 Estratégia de Detecção
+
+### Pipeline de build (tempo de `docker build`)
+
+1. `cmd/build-index` lê `references.json.gz` (3M vetores)
+2. Executa **k-means++** com 1024 clusters e 25 iterações para construir o índice IVF
+3. Quantiza os vetores de `float32` para `int16` (escala ×1000) — reduz memória de 192 MB para 96 MB
+4. Escreve `resources/index.bin` (~99 MB) já embutido na imagem final
+
+### Busca IVF em tempo de execução
+
+```
+query float32[14]
+  → quantiza para int16[16]  (0-padding para load AVX2 de 256 bits)
+  → distância float32 para os 1024 centroides
+  → seleciona os 48 clusters mais próximos (NProbe=48)
+  → 1 chamada CGo → ivf_cluster_scan() varre ~140K vetores via _mm256_madd_epi16
+  → top-7 vizinhos mais próximos → conta fraudes → retorna resposta pré-computada
+```
+
+**`_mm256_madd_epi16`** calcula 8 produtos int16 e os soma em int32 em uma única instrução AVX2, habilitando a distância Euclidiana quadrática sem conversão para float.
 
 ### Vetorização (14 dimensões)
 
@@ -63,17 +85,11 @@ gorinha-2026/
 | 12 | Risco do MCC | valor de `mcc_risk.json` (padrão: 0.5) |
 | 13 | Valor médio do merchant | `clamp(merchant.avg_amount / 10000)` |
 
-### Busca KNN
-
-* Distância Euclidiana quadrática (sem `sqrt` — preserva a ordenação)
-* Top-5 rastreado com array fixo `[5]neighbor` alocado na stack — **zero alocações de heap** no caminho quente
-* Arrays `[14]float32` de tamanho fixo permitem ao compilador desenrolar e vetorizar o loop com instruções SIMD (AVX2)
-
 ### Decisão
 
 ```
-fraud_score = fraudes_entre_os_5 / 5
-approved    = fraud_score < 0.6
+fraud_score = fraudes_entre_os_7 / 7
+approved    = fraud_count < 2  (≈ 28,6% — limiar Bayes-ótimo para custo FN = 3× FP)
 ```
 
 ## 🧪 Endpoints
@@ -100,8 +116,17 @@ Retorna `200 OK` quando o índice foi carregado e o serviço está pronto.
 **Response:**
 
 ```json
-{ "approved": false, "fraud_score": 1.0 }
+{ "approved": false, "fraud_score": 0.4286 }
 ```
+
+## ⚡ Performance
+
+Medições em i5-13420H:
+
+| Operação | Latência | Alocações |
+|----------|----------|-----------|
+| `IVFSearch` (NProbe=48) | ~130 µs | ≤2 (overhead CGo) |
+| `Vectorize` | ~103 ns | 0 |
 
 ## 🚀 Recursos de Infraestrutura
 
