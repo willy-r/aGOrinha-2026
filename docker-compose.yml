@@ -12,11 +12,11 @@ services:
           cpus: "0.45"
           memory: "165MB"
     healthcheck:
-      test: [ "CMD", "wget", "-q", "-O-", "http://127.0.0.1:9999/ready" ]
-      interval: 3s
-      timeout: 2s
-      retries: 10
-      start_period: 10s
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:9999/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
 
   app2:
     image: willrodrigues/gorinha-2026:latest
@@ -31,11 +31,11 @@ services:
           cpus: "0.45"
           memory: "165MB"
     healthcheck:
-      test: [ "CMD", "wget", "-q", "-O-", "http://127.0.0.1:9999/ready" ]
-      interval: 3s
-      timeout: 2s
-      retries: 10
-      start_period: 10s
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:9999/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
 
   nginx:
     image: nginx:1.27-alpine
