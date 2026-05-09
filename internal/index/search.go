@@ -84,7 +84,7 @@ func IVFSearch(idx *Index, query *[Dims]float32) int {
 }
 
 // partialMinSelect rearranges arr so the first n elements are the n smallest.
-// O(NumClusters × n) — for NumClusters=1024 and n=8 this is ~8 K comparisons.
+// O(NumClusters × n) — for NumClusters=1024 and n=32 this is ~32 K comparisons.
 func partialMinSelect(arr *[NumClusters]centroidDist, n int) {
 	for i := range n {
 		minIdx := i
