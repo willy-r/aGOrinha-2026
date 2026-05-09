@@ -1,6 +1,7 @@
 services:
   app1:
-    image: willrodrigues/gorinha-2026:latest
+    image: willrodrigues/gorinha-2026:v2
+    pull_policy: always
     networks:
       - backend
     environment:
@@ -19,7 +20,8 @@ services:
       start_period: 30s
 
   app2:
-    image: willrodrigues/gorinha-2026:latest
+    image: willrodrigues/gorinha-2026:v2
+    pull_policy: always
     networks:
       - backend
     environment:
