@@ -20,9 +20,9 @@ func main() {
 	refs := loadRefs(inputPath)
 	log.Printf("build-index: loaded %d references", len(refs))
 
-	log.Printf("build-index: running k-means (clusters=%d, nprobe=%d, maxIter=25)…",
+	log.Printf("build-index: running k-means (clusters=%d, nprobe=%d, maxIter=50)…",
 		index.NumClusters, index.NProbe)
-	if err := index.BuildAndWrite(refs, index.NumClusters, index.NProbe, 25, outputPath); err != nil {
+	if err := index.BuildAndWrite(refs, index.NumClusters, index.NProbe, 50, outputPath); err != nil {
 		log.Fatalf("build-index: %v", err)
 	}
 	log.Printf("build-index: wrote %s", outputPath)

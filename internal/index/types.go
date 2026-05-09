@@ -4,7 +4,7 @@ const (
 	Dims        = 14
 	K           = 7
 	NumClusters = 1024
-	NProbe      = 48
+	NProbe      = 8
 	// VecScale maps float32 → int16: [0,1]→[0,1000], -1 sentinel→-1000.
 	// Max squared dist: 14×(2000)²=56,000,000 — fits in int32.
 	VecScale = 1000.0
